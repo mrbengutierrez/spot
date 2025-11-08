@@ -1,162 +1,185 @@
-1. Problem they’re poking at
-
-Everyone worries about LLM hallucinations, so lots of metrics have been invented to measure how bad they are (ROUGE-ish overlap, BERTScore-ish similarity, task-specific things like Q², NLI classifiers like Critic, LLM-as-judge, etc.).
-
-But almost nobody has stopped to ask:
-
-Do these metrics actually agree with humans?
-
-Do they work outside the dataset or model they were built/tested on?
-
-Do they get better when the underlying LLM gets bigger or better?
-
-Do they behave the same for different decoding strategies (greedy vs sampling)?
-
-This paper says: let’s test that, properly, and at scale.
-
-2. What they actually evaluated
-
-They create a big evaluation grid:
-
-4 datasets:
-
-Begin (3 knowledge-grounded dialogue sets with human hallucination labels)
-
-HaluEval (hallucination benchmark with dialog + QA, also with labels)
-
-TruthfulQA (factual QA, but they generate the answers themselves)
-
-FaithDial (knowledge-grounded dialog, they also generate answers)
-
-Only Begin and HaluEval come with human labels for hallucination, so those two are where they can really check “does the metric match humans?”
-
-37 models from 5 families (OPT, Llama, OLMo, Phi, Gemma), small to big, often both base and instruction-tuned.
-
-5 decoding methods: greedy, beam, ancestral, top-k, top-p.
-
-6 kinds of hallucination metrics:
-
-n-gram / overlap: ROUGE-L, SacreBLEU, Knowledge-F1
-
-semantic similarity: BERTScore, Knowledge-BERTScore
-
-UniEval (pretrained evaluators for consistency/groundedness)
-
-Q² (generate questions from output, answer them, check against source)
-
-Critic (NLI-style classifier that says “this is unfaithful”)
-
-LLM-as-judge (GPT-4) + an ensemble that combines several signals
-
-So: many metrics × many models × many decoding styles × multiple datasets.
-
-That’s the whole paper: stress-test the metrics themselves.
-
-3. Their four main findings
-Finding 1: Most metrics don’t reliably match humans. GPT-4 does.
-
-They compare each metric to human hallucination labels (Table 1).
-
-What they see:
-
-GPT-4-as-judge is the most consistently aligned with humans across the different subsets.
-
-Their ensemble (combine GPT-4, Critic, K-BERTScore, Q², consistency via FAMD) is a close second.
-
-Critic is good on the dataset it was basically designed for (Begin, dialog-ish), but falls apart on HaluEval.
-
-UniEval and some similarity metrics can look OK in numbers, but that’s partly because, in some subsets, they basically label almost everything as hallucinated — so they look “accurate” on a skewed dataset, but they’re not actually understanding hallucinations.
-
-So the headline: outside GPT-4 (and ensembles), current metrics are spotty and dataset-sensitive.
-
-Why this matters: if you compare two systems using a weak metric, you might think one hallucinates less — but that could just be the metric’s bias.
-
-Finding 2: Metrics don’t agree with each other.
-
-They compute inter-metric correlations and show: weak to no correlation.
-
-Why? Because each metric is looking at a different slice of the hallucination problem:
-
-Overlap metrics: “did you say the same words?”
-
-Semantic metrics: “are you roughly talking about the same thing?”
-
-Q²: “if I turn this into QA, does it still hold up?”
-
-NLI-style (Critic): “does this contradict the source?”
-
-GPT-4: “does this make sense in context, holistically?”
-
-Those are not the same task. So two metrics can both be “good” on average but rarely fire on the same examples. Their Figure 2 shows this low overlap very explicitly.
-
-Takeaway: hallucination isn’t 1-dimensional, so 1-dimensional metrics disagree. That’s also why their ensemble works better — it blends complementary signals.
-
-Finding 3: Instruction-tuning and mode-seeking decoding reduce hallucinations.
-
-They test whether hallucination scores change when:
-
-you use an instruction-tuned version of a model vs base
-
-you decode with greedy/beam (mode-seeking) vs sampling (top-k / top-p / ancestral)
-
-They do significance tests and find:
-
-Instruction-tuned models usually look less hallucinate-y to the better metrics (GPT-4, Critic) → so post-training helps, as prior papers suspected.
-
-Greedy/beam tend to hallucinate less than sampling — consistent with earlier dialog work: sampling explores, and exploration can lead to making stuff up.
-
-So: some levers we already use (tuning + decoding) do show up in hallucination metrics. That’s a nice confirmatory result.
-
-Finding 4: Bigger models don’t automatically look “less hallucinated” to most metrics.
-
-This one is the spicy one.
-
-You’d expect: bigger model → better generations → hallucinate less → metric score improves.
-
-But when they plot metric score vs model size, they don’t see a clean, monotonic improvement for most metrics.
-
-Some metrics even get worse with size for some datasets.
-
-Only GPT-4-as-judge shows a consistent “yeah, the bigger models look better” signal.
-
-They also notice weird model behaviors (e.g. some Gemma models just abstain), which fool overlap-style metrics but are better picked up by GPT-4/Critic.
-
-Their conclusion: if your metric doesn’t reflect scaling gains, maybe your metric isn’t really tracking hallucination.
-
-That’s the “mirage” in the title: you think you’re measuring hallucination, but really you’re measuring something narrow like overlap, so you don’t see the benefits of better models.
-
-4. What this means in practice
-
-Here’s how I’d translate their conclusions for someone building/evaluating LLMs:
-
-Don’t trust a single cheap metric (ROUGE, BERTScore, even some pretrained “consistency” models) to tell you “this system hallucinates less.” It might be dataset luck.
-
-LLM-as-judge (GPT-4) is currently the strongest single metric for hallucination-style evaluation in their setup.
-
-Ensembles help because hallucination has multiple faces (unsupported detail, wrong fact, off-topic, ungrounded).
-
-Decode greedily/beam if you care about faithfulness — sampling will probably look worse.
-
-Instruction-tune your model — evaluation metrics actually reflect less hallucination after tuning.
-
-Be skeptical of papers that report small metric gains on one dataset — this paper shows lots of metrics don’t generalize across Begin ↔ HaluEval.
-
-We still need better metrics — especially ones that are (a) robust across tasks, (b) sensitive to scaling, and (c) not easily gamed by always yelling “hallucination!”
-
-5. Limitations they admit
-
-They’re pretty honest:
-
-They only have human labels on Begin and HaluEval, so the “alignment with humans” finding is only really grounded there.
-
-They only study knowledge-grounded dialog and QA — not summarization, MT, code, etc., where hallucination looks a bit different.
-
-They don’t cover uncertainty-based metrics that need token probs (semantic entropy, SAR) because those probs weren’t available in the public datasets.
-
-They test GPT-4-as-judge, but not a whole zoo of judge variants (CoT judges, G-Eval, smaller judges).
-
-So the message is “we checked a lot, but not everything.”
-
-6. One-sentence takeaway
-
-Most current hallucination metrics are brittle and don’t generalize; GPT-4-as-judge (or a good ensemble) is the most reliable right now, and you should be cautious about claiming “less hallucination” unless you’ve checked with something that actually tracks human judgment.
+```
+# pip install sentence-transformers
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
+
+_model_st = None
+def _get_st_model():
+    global _model_st
+    if _model_st is None:
+        _model_st = SentenceTransformer("all-MiniLM-L6-v2")
+    return _model_st
+
+def sentence_adj_similarity_coherence(text: str) -> float:
+    """
+    Returns average cosine similarity between adjacent sentences.
+    Higher = more locally coherent.
+    """
+    # trivial sentence split – replace with a better splitter if you like
+    sentences = [s.strip() for s in text.replace("?", ".").replace("!", ".").split(".") if s.strip()]
+    if len(sentences) < 2:
+        return 1.0  # single sentence is trivially "coherent"
+    
+    model = _get_st_model()
+    embs = model.encode(sentences)
+    
+    sims = []
+    for i in range(len(embs) - 1):
+        sim = cosine_similarity([embs[i]], [embs[i+1]])[0][0]
+        sims.append(sim)
+    
+    return sum(sims) / len(sims)
+
+```
+
+```
+# pip install spacy
+# python -m spacy download en_core_web_sm
+import spacy
+
+_nlp = None
+def _get_nlp():
+    global _nlp
+    if _nlp is None:
+        _nlp = spacy.load("en_core_web_sm")
+    return _nlp
+
+def entity_overlap_coherence(text: str) -> float:
+    """
+    Fractional overlap of entities/noun-chunks between adjacent sentences.
+    Returns value in [0,1]. Higher = more shared discourse entities.
+    """
+    nlp = _get_nlp()
+    doc = nlp(text)
+    # split by sentences from spaCy
+    sents = list(doc.sents)
+    if len(sents) < 2:
+        return 1.0
+    
+    overlaps = []
+    for i in range(len(sents) - 1):
+        s1 = sents[i]
+        s2 = sents[i+1]
+        
+        # collect surface forms of entities + noun chunks
+        def collect_units(span):
+            ents = {e.text.lower().strip() for e in span.ents}
+            # add noun chunks to be less brittle
+            nch = {nc.text.lower().strip() for nc in span.noun_chunks}
+            return ents.union(nch)
+        
+        e1 = collect_units(s1)
+        e2 = collect_units(s2)
+        
+        if not e1 and not e2:
+            overlaps.append(1.0)  # two generic sentences; don't punish
+            continue
+        inter = len(e1.intersection(e2))
+        union = len(e1.union(e2))
+        overlaps.append(inter / union)
+    
+    return sum(overlaps) / len(overlaps)
+
+```
+
+```
+# pip install transformers torch
+import torch
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+import math
+
+_bart_tokenizer = None
+_bart_model = None
+def _get_bart():
+    global _bart_tokenizer, _bart_model
+    if _bart_model is None:
+        model_name = "facebook/bart-large-cnn"
+        _bart_tokenizer = AutoTokenizer.from_pretrained(model_name)
+        _bart_model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+    return _bart_tokenizer, _bart_model
+
+def bartstyle_source_summary_coherence(source: str, summary: str) -> float:
+    """
+    Returns negative log-likelihood per token of the summary given the source.
+    Lower is better. We invert to make 'higher is better'.
+    """
+    tokenizer, model = _get_bart()
+    inputs = tokenizer(source, return_tensors="pt", truncation=True, max_length=1024)
+    with tokenizer.as_target_tokenizer():
+        labels = tokenizer(summary, return_tensors="pt", truncation=True, max_length=256).input_ids
+    labels[labels == tokenizer.pad_token_id] = -100  # ignore padding in loss
+    
+    with torch.no_grad():
+        loss = model(**inputs, labels=labels).loss.item()
+    # convert to a bounded-ish score: higher is better
+    score = math.exp(-loss)  # just a monotonic transform
+    return score
+```
+
+```
+from typing import List
+import torch
+
+def compute_nsp_coherence(summary: str,
+                          model_name: str = "bert-base-uncased") -> float:
+    """
+    Uses BERT's Next Sentence Prediction head to score adjacent sentences.
+    Returns average P(is_next).
+    """
+    from transformers import BertTokenizer, BertForNextSentencePrediction
+
+    sents = sentence_split(summary)
+    if len(sents) < 2:
+        return 1.0
+
+    tokenizer = BertTokenizer.from_pretrained(model_name)
+    model = BertForNextSentencePrediction.from_pretrained(model_name)
+    model.eval()
+
+    probs = []
+    for a, b in zip(sents[:-1], sents[1:]):
+        encoding = tokenizer(a, b, return_tensors='pt', truncation=True, max_length=512)
+        with torch.no_grad():
+            logits = model(**encoding).logits  # shape [1,2]
+        # logits[0,0] = is_next, logits[0,1] = not_next for BERT NSP
+        is_next_prob = torch.softmax(logits, dim=1)[0, 0].item()
+        probs.append(is_next_prob)
+
+    return sum(probs) / len(probs)
+```
+
+```
+from typing import List
+import numpy as np
+
+def sentence_split(text: str) -> List[str]:
+    # super simple splitter; swap for nltk or spacy in real use
+    import re
+    sents = re.split(r'(?<=[.!?])\s+', text.strip())
+    return [s for s in sents if s]
+
+def compute_adjacent_embedding_coherence(summary: str,
+                                         model_name: str = "sentence-transformers/all-MiniLM-L6-v2") -> float:
+    """
+    Returns mean cosine similarity between adjacent sentences.
+    Higher = more locally coherent.
+    """
+    from sentence_transformers import SentenceTransformer
+    from numpy.linalg import norm
+
+    sents = sentence_split(summary)
+    if len(sents) < 2:
+        return 1.0  # trivially coherent
+
+    model = SentenceTransformer(model_name)
+    embeddings = model.encode(sents)
+
+    sims = []
+    for i in range(len(embeddings) - 1):
+        a, b = embeddings[i], embeddings[i+1]
+        cos = float(np.dot(a, b) / (norm(a) * norm(b) + 1e-9))
+        sims.append(cos)
+
+    return float(np.mean(sims))
+
+```
